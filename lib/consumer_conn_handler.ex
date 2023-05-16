@@ -23,6 +23,7 @@ defmodule ConsumerConnHandler do
       ["user", username] -> handle_username(socket, state, username)
       ["subscribe", topic] -> handle_subscribe(socket, state, topic)
       ["unsubscribe", topic] -> handle_unsubscribe(socket, state, topic)
+      ["acknowledge", uuid] -> handle_acknowledge(socket, state, uuid)
       _ -> handle_unknown_command(socket, string, state)
     end
   end
@@ -33,7 +34,9 @@ defmodule ConsumerConnHandler do
         nil ->
           case Supervisor.start_child(QueueSupervisor, %{
                  id: :"#{username}",
-                 start: {Queue, :start_link, [username]}
+                 start:
+                   {Queue, :start_link,
+                    [%{username: username, topics: MapSet.new(), sockets: [], unread_msgs: []}]}
                }) do
             {:ok, _pid} ->
               Logger.info("Queue for user #{username} has been created")
@@ -43,15 +46,16 @@ defmodule ConsumerConnHandler do
           end
 
           :gen_tcp.send(socket, "Acting as #{username}\r\n")
+
+          Queue.get_name(username)
+          |> Queue.add_socket(socket)
+
           %{current_user: username}
 
         val ->
           :gen_tcp.send(socket, "Cannot change user.\r\n")
           %{current_user: val}
       end
-
-    Queue.get_name(username)
-    |> Queue.add_socket(socket)
 
     state
   end
@@ -81,6 +85,21 @@ defmodule ConsumerConnHandler do
         |> Queue.remove_topic(topic)
 
         :gen_tcp.send(socket, "Successfully unsubscribed from '#{topic}' topic.\r\n")
+    end
+
+    state
+  end
+
+  defp handle_acknowledge(socket, state, uuid) do
+    case state.current_user do
+      nil ->
+        :gen_tcp.send(socket, "Act as user before acknowledging a message.\r\n")
+
+      val ->
+        Queue.get_name(val)
+        |> Queue.acknowledge_message(uuid)
+
+        :gen_tcp.send(socket, "Message with UUID #{uuid} will be considered as acknowledged.\r\n")
     end
 
     state
